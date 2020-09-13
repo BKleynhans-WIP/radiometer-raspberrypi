@@ -1,0 +1,44 @@
+{
+    "siteName": "yourSiteName",
+    "siteCode": "uniqueSiteCode",
+    "headingString": "ch01,ch02,tp1,ch03,ch04,tp2,ch05,ch06,ch07,ch08,tp3,ch11,ch12,ch13,ch14,ch15,ch16,ch17,ch18Year,Month,Day,Hour,Minutes,Seconds\n",
+    "toUploadPath": "/mnt/storage/toUpload",
+    "uploadedPath": "/mnt/storage/uploaded",    
+    "savePath": "/mnt/storage",
+    "protocol": {
+        "ssh": {
+            "servers": [
+                "tornado.cis.rit.edu",
+                "aldrin.cis.rit.edu",
+                "conrad.cis.rit.edu",
+                "collins.cis.rit.edu"
+            ],
+            "username": "yourUsername",
+            "password": "yourPassword",
+            "remoteDestinationPath": "your/destination/directory"
+        },
+        "ftp": {
+            "servers": [
+                "tornado.cis.rit.edu",
+                "aldrin.cis.rit.edu",
+                "conrad.cis.rit.edu",
+                "collins.cis.rit.edu"
+            ],
+            "username": "anonymous",
+            "password": "yourEmail@somewhere.com",
+            "remoteDestinationPath": ""
+        }
+    },
+    "provider": {
+        "name": "hologram",
+        "apn": "hologram",
+        "username": "",
+        "password": ""
+    },
+    "sim7600": {
+        "powerKey": 6,
+        "radio": "/dev/cdc-wdm0",
+        "serial0": "/dev/ttyS0",
+        "baudRate": 115200
+    }
+}
