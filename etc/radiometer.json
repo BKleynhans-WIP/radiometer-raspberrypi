@@ -1,7 +1,7 @@
 {
     "siteName": "yourSiteName",
     "siteCode": "uniqueSiteCode",
-    "headingString": "ch01,ch02,tp1,ch03,ch04,tp2,ch05,ch06,ch07,ch08,tp3,ch11,ch12,ch13,ch14,ch15,ch16,ch17,ch18Year,Month,Day,Hour,Minutes,Seconds\n",
+    "headingString": "ch01,ch02,tp1,ch03,ch04,tp2,ch05,ch06,ch07,ch08,tp3,ch11,ch12,ch13,ch14,ch15,ch16,ch17,ch18,Year,Month,Day,Hour,Minutes,Seconds\n",
     "toUploadPath": "/mnt/storage/toUpload",
     "uploadedPath": "/mnt/storage/uploaded",    
     "savePath": "/mnt/storage",
