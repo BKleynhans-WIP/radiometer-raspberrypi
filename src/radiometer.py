@@ -28,6 +28,7 @@ import piplates.DAQC2plate as DAQC2
 # Project imports
 from src.sim7600 import Sim7600
 from src.filemanager import Filemanager
+from src.weather_sensors import WeatherSensors
 
 DEGREE_SIGN = u'\N{DEGREE SIGN}'
 
@@ -46,7 +47,7 @@ class Radiometer:
         self.delete_cron_log = True
         
         # Should data be uploaded
-        self.upload_data = False
+        self.upload_data = False 
         
         # Save the current time
         self.current_time = time.time()
@@ -61,9 +62,20 @@ class Radiometer:
         # Get GPS Coordinates
         self.args['coordinates'] = self.sim7600.get_position()
         
+        # Add variables for wind and rain meter
+        self.args['anemometer'] = 0
+        self.args['rainGauge'] = 0
+        
+        # Create an instance of the WeatherSensors object
+        # This is a threaded object that measures wind speed and rain
+        self.weather_sensors = WeatherSensors(self.args)
+        
         # Turn off Pi-Plates status LED on each plate
         for i in range(0, 2):
             DAQC2.setLED(i,'off')
+            
+        # Counter to send initial upload for connectivity test
+        self.test_counter = 0
         
         # Run program loop
         while True:
@@ -81,6 +93,11 @@ class Radiometer:
         if datetime.now(timezone.utc).strftime('%Y%m%d') != self.today:
             self.new_day_procedure()
             
+        # The wind and rain sensors work on running averages of ticks per second,
+        # as such they need to be read continuously
+        self.weather_sensors.read_anemometer()
+        self.weather_sensors.read_rain_gauge()
+        
         self.current_time = time.time()
         
         elapsed_time = self.current_time - self.previous_time
@@ -88,8 +105,13 @@ class Radiometer:
         # Check if 1 second has passed, then take another set of samples
         if elapsed_time >= 1 and not self.upload_data:
             self.sample_data()
+            self.test_counter += 1
         elif elapsed_time >= 1 and self.upload_data:
             self.previous_time = self.current_time
+        
+        # After collecting 10 samples, upload a test file to the server
+        if self.test_counter == 10:
+            self.upload_sample_test()
 
 
     # The startup procedure runs on system boot, and every time the date changes
@@ -115,8 +137,18 @@ class Radiometer:
         # Set the filename for the new data file
         self.build_filename()
 
-        # Write the headings to the new data file
-        self.build_heading()
+        # Test if a sample file for the specific date already exists
+        data_files = self.filemanager.get_local_contents(self.args['preferences']['savePath'])
+        create_headings = True
+        
+        for data_file in data_files:
+            if data_file == self.args['filename']:
+                create_headings = False
+        
+        # If there is no file for the specified date, create a new file and add headings
+        if create_headings:
+            # Write the headings to the new data file
+            self.build_heading()
         
         self.initial_startup = False
         
@@ -126,21 +158,60 @@ class Radiometer:
         # Power off Sim7600
         self.sim7600.power_off()
         
-        # Check if there are any files in the storage root directory that have become "stale"
-        # (they are from previous days) and move them to the "toUpload" directory
-        stale_files = self.filemanager.get_local_contents('/mnt/storage')
-        
-        for s_file in stale_files:
-            if s_file[6:8] != "{}".format(datetime.now(timezone.utc).strftime('%d')):
-                self.filemanager.move_file(
-                    os.path.join(self.args['preferences']['savePath'], s_file), 
-                    self.args['preferences']['toUploadPath']
-                )
+        # Move stale files to toUpload directory
+        self.check_stale_files()
         
         # Delete cron log after successful startup
         if self.delete_cron_log:
             self.delete_cron_log = False
             self.filemanager.delete_file("/home/pi/cron.log")
+
+    
+    # Upload the sample file to allow testing of data upload from remote location
+    # while still on site.
+    def upload_sample_test(self):
+        
+        self.upload_data = True
+        self.initial_startup = True
+        
+        print("Copying {} to {} directory".format(
+                os.path.join(self.args['preferences']['savePath'],self.args['filename']),
+                os.path.join(self.args['preferences']['toUploadPath'], "sample_test.csv")
+            )
+        )
+        
+        # Create a copy of the current day file in the 'toUpload' directory
+        self.filemanager.copy_file(
+                os.path.join(self.args['preferences']['savePath'], self.args['filename']),
+                os.path.join(self.args['preferences']['toUploadPath'], "sample_test.csv")
+            )
+        
+        # ~ print("Renaming {} to {}".format(
+            # ~ os.path.join(self.args['preferences']['toUploadPath'], self.args['filename']), 
+            # ~ os.path.join(self.args['preferences']['toUploadPath'], "sample_test.csv"))
+        # ~ )
+        
+        # ~ # Rename the sample file to 'sample_test.csv'
+        # ~ self.filemanager.move_file(
+            # ~ os.path.join(self.args['preferences']['toUploadPath'], self.args['filename']),
+            # ~ os.path.join(self.args['preferences']['toUploadPath'], "sample_test.csv")
+        # ~ )
+    
+    
+    # Check if there are any files in the storage root directory that have become "stale"
+    # (they are from previous days) and move them to the "toUpload" directory
+    def check_stale_files(self):
+        
+        stale_files = self.filemanager.get_local_contents('/mnt/storage')
+        
+        for s_file in stale_files:
+            if s_file[6:8] != "{}".format(datetime.now(timezone.utc).strftime('%d')):
+                print("Moving {} to 'toUpload' directory".format(os.path.join(self.args['preferences']['savePath'], s_file)))
+
+                self.filemanager.move_file(
+                    os.path.join(self.args['preferences']['savePath'], s_file), 
+                    self.args['preferences']['toUploadPath']
+                )
 
 
     # The new day procedure runs every time the date changes
@@ -168,20 +239,28 @@ class Radiometer:
     
     def sample_data(self):
         
+        heading_indices = self.args['preferences']['headingString'].split(",")
         data_string = ""
                 
-        for i in range(2):
-            for j in range(8):
-                data_string += "{:.5f},".format(DAQC2.getADC(i, j))
+        for idx in heading_indices:
+            if idx[:2] == "ch":
                 
-                if i == 0 and j == 1:
-                    data_string += "I1,"
-                    
-                if i == 0 and j == 3:
-                    data_string += "I2,"
-                    
-                if i == 0 and j == 7:
-                    data_string += "I3,"
+                # Read the normal input pins
+                if self.args['preferences']['headerIndices'][idx] == "Anemometer(km/h)": # 1 tick per second = 2.4km/h
+                    data_string += "{:.1f},".format(
+                        self.args['anemometer']
+                    )
+                elif self.args['preferences']['headerIndices'][idx] == "RainGauge(mm)": # 1 tick = 0.2794mm rain
+                    data_string += "{:.4f},".format(
+                        self.args['rainGauge']
+                    )
+                else:
+                    data_string += "{:.5f},".format(
+                        DAQC2.getADC(
+                            int(idx[2]),
+                            int(idx[3])
+                        )
+                    )
         
         data_string += "{},".format(datetime.now(timezone.utc).strftime('%Y'))
         data_string += "{},".format(datetime.now(timezone.utc).strftime('%m'))
@@ -210,23 +289,33 @@ class Radiometer:
         self.filemanager.build_structure(self.args['preferences']['siteName'], self.args['filename'])
         
         for csv_source_file in files_to_upload:
+            print("Zipping {}".format(csv_source_file))
+
             full_source_path = self.zip_file(
                                     self.args['preferences']['toUploadPath'],
                                     csv_source_file
                                 )
 
-            full_destination_path = os.path.join(
-                                    self.args['preferences']['protocol']['ssh']['remoteDestinationPath'],
-                                    self.args['preferences']['siteName'],
-                                    csv_source_file[:4],
-                                    csv_source_file[4:6],
-                                    full_source_path[full_source_path.rfind('/') + 1:]
-                                )
-                                
+            if csv_source_file == "sample_test.csv":
+                full_destination_path = os.path.join(
+                                            self.args['preferences']['protocol']['ssh']['remoteDestinationPath'],
+                                            self.args['preferences']['siteName'],
+                                            "sample_test.zip"
+                                        )
+            else:
+                full_destination_path = os.path.join(
+                                            self.args['preferences']['protocol']['ssh']['remoteDestinationPath'],
+                                            self.args['preferences']['siteName'],
+                                            csv_source_file[:4],
+                                            csv_source_file[4:6],
+                                            full_source_path[full_source_path.rfind('/') + 1:]
+                                        )
+
             print("     --- Uploading DATA to server ---\n", end = '')
             
-            try:                
+            try:
                 self.filemanager.upload_to_server(full_source_path, full_destination_path)
+                print("{} uploaded successfully".format(csv_source_file))
                 
             except:                
                 e = sys.exc_info()[0]
@@ -237,7 +326,14 @@ class Radiometer:
             print("     --- Moving old file ---")
                 
             try:
-                self.filemanager.move_file(full_source_path, self.args['preferences']['uploadedPath'])
+                if csv_source_file != "sample_test.csv":
+                    self.filemanager.move_file(full_source_path, self.args['preferences']['uploadedPath'])
+                else:
+                    self.filemanager.delete_file(os.path.join(
+                            self.args['preferences']['toUploadPath'],
+                            "sample_test.zip"
+                        )
+                    )
             except:                
                 e = sys.exc_info()[0]
                 
@@ -284,7 +380,7 @@ class Radiometer:
         
     def build_filename(self):
         
-        print("    --- Building Filename --n")
+        print("\n    --- Building Filename --- \n")
         
         # Set the new filename
         self.args['filename'] = str(datetime.now(timezone.utc).strftime('%Y'))
@@ -347,13 +443,25 @@ class Radiometer:
 
     def write_heading_string(self):
         
-        print(self.args['preferences']['headingString'], end = '')
+        heading_indices = self.args['preferences']['headingString'].split(",")
+        heading_string = ""
+        
+        for idx in heading_indices:
+            if idx[:2] == "ch":
+                heading_string += self.args['preferences']['headerIndices'][idx]
+            else:
+                heading_string += idx
+                
+            if idx != heading_indices[len(heading_indices) - 1]:
+                heading_string += ","
+            
+        print(heading_string, end = '')
         
         # Write the title to the file
         self.filemanager.save_to_file(
             self.args['preferences']['savePath'], 
             self.args['filename'],
-            self.args['preferences']['headingString']
+            heading_string
         )
         
         
