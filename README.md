@@ -29,4 +29,4 @@ The installation document contains detailed information on the software installa
 
 # Hardware
 ---
-Components-and-Construction.md
+[Components-and-Construction.md](Components-and-Construction.md)
