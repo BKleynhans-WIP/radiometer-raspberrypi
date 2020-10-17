@@ -35,23 +35,29 @@ DEGREE_SIGN = u'\N{DEGREE SIGN}'
 class Radiometer:
 
     def __init__(self, sim7600, filemanager, args):
-        
+
         self.sim7600 = sim7600
         self.filemanager = filemanager
         self.args = args
-        
+
         # Is this the first time the script is running after power cycle
         self.initial_startup = True
-        
+
         # There will be a cron.log file which needs to be deleted IF the cron ran successfully
         self.delete_cron_log = True
-        
+
         # Should data be uploaded
         self.upload_data = False 
 
         # Should we get a GPS postion
-        self.get_gps_position = True
-        
+        self.get_gps_position = True 
+
+        # How many samples should be taken before the sample upload is done
+        self.sample_size = 120
+
+        # Check if required local directories exist, and if they don't creat them
+        self.filemanager.check_directory_requirements()
+
         # Save the current time
         self.current_time = time.time()
         self.previous_time = self.current_time
@@ -114,7 +120,7 @@ class Radiometer:
             self.previous_time = self.current_time
         
         # After collecting 10 samples, upload a test file to the server
-        if self.test_counter == 10:
+        if self.test_counter == self.sample_size:
             self.upload_sample_test()
 
 
@@ -149,7 +155,7 @@ class Radiometer:
         self.build_filename()
 
         # Test if a sample file for the specific date already exists
-        data_files = self.filemanager.get_local_contents(self.args['preferences']['savePath'])
+        data_files = self.filemanager.get_local_files(self.args['preferences']['savePath'])
         create_headings = True
         
         for data_file in data_files:
@@ -173,10 +179,13 @@ class Radiometer:
         # Move stale files to toUpload directory
         self.check_stale_files()
         
-        # Delete cron log after successful startup
-        if self.delete_cron_log:
-            self.delete_cron_log = False
-            self.filemanager.delete_file("/home/pi/cron.log")
+        # Delete cron log after successful startup if present
+        try:
+            if self.delete_cron_log:
+                self.delete_cron_log = False
+                self.filemanager.delete_file("/home/pi/cron.log")
+        except:
+            print("No log file to delete")
 
     
     # Upload the sample file to allow testing of data upload from remote location
@@ -186,7 +195,7 @@ class Radiometer:
         self.upload_data = True
         self.initial_startup = True
         
-        print("Copying {} to {} directory".format(
+        print("Copying {} to {}".format(
                 os.path.join(self.args['preferences']['savePath'],self.args['filename']),
                 os.path.join(self.args['preferences']['toUploadPath'], "sample_test.csv")
             )
@@ -203,7 +212,7 @@ class Radiometer:
     # (they are from previous days) and move them to the "toUpload" directory
     def check_stale_files(self):
         
-        stale_files = self.filemanager.get_local_contents('/mnt/storage')
+        stale_files = self.filemanager.get_local_files('/mnt/storage')
         
         for s_file in stale_files:
             if s_file[6:8] != "{}".format(datetime.now(timezone.utc).strftime('%d')):
@@ -302,14 +311,13 @@ class Radiometer:
         
         self.filemanager.connect_sftp()
         
-        files_to_upload = self.filemanager.get_local_contents(self.args['preferences']['toUploadPath'])
+        files_to_upload = self.filemanager.get_local_files(self.args['preferences']['toUploadPath'])
 
-        self.filemanager.build_structure(self.args['preferences']['siteName'], self.args['filename'])
+        self.filemanager.build_remote_structure(self.args['preferences']['siteName'], self.args['filename'])
         
         for csv_source_file in files_to_upload:
-            print("\n>> Zipping {}".format(csv_source_file))
-
-            full_source_path = self.zip_file(
+                                
+            full_source_path = os.path.join(
                                     self.args['preferences']['toUploadPath'],
                                     csv_source_file
                                 )
@@ -318,7 +326,7 @@ class Radiometer:
                 full_destination_path = os.path.join(
                                             self.args['preferences']['protocol']['ssh']['remoteDestinationPath'],
                                             self.args['preferences']['siteName'],
-                                            "sample_test.zip"
+                                            "sample_test.csv"#"sample_test.zip"
                                         )
                 
                 print("\n     --- Uploading SAMPLE_TEST.ZIP to server ---\n")
@@ -338,7 +346,7 @@ class Radiometer:
                 self.filemanager.upload_to_server(full_source_path, full_destination_path)
                 print("{} uploaded successfully".format(csv_source_file))
                 
-            except:                
+            except:
                 e = sys.exc_info()[0]
                 
                 print("\n   !!! An Exception Occurred During Remote Transfer !!!")
@@ -352,44 +360,19 @@ class Radiometer:
                 else:
                     self.filemanager.delete_file(os.path.join(
                             self.args['preferences']['toUploadPath'],
-                            "sample_test.zip"
+                            "sample_test.csv"#"sample_test.zip"
                         )
                     )
-            except:                
+            except:
                 e = sys.exc_info()[0]
                 
                 print("\n   !!! An Exception Occurred During Local File Move !!!")
                 print("{}".format(e))
 
 
-    def zip_file(self, csv_source_path, filename):
-        
-        filename_no_extension = filename[:filename.find('.')]
-        zipped_filename = filename_no_extension + '.zip'
-        
-        full_zipped_path = os.path.join(csv_source_path, zipped_filename)
-        
-        zipped_file = zipfile.ZipFile(full_zipped_path, 'w')
-        zipped_file.write(
-            os.path.join(
-                csv_source_path,
-                filename
-            ),
-            compress_type = zipfile.ZIP_DEFLATED
-        )
-        zipped_file.close()
-        
-        self.filemanager.delete_file(os.path.join(csv_source_path, filename))
-        
-        return full_zipped_path
-
-
     def set_clock(self):
         
-        stream = os.popen('timedatectl')
-        print(stream.read())
-        
-        datetime_now = datetime.now(timezone.utc)
+        print(self.sim7600.update_utc_time())
         
         self.args['date'] = {
             'today_local' : datetime.now(),
@@ -408,6 +391,8 @@ class Radiometer:
         self.args['filename'] += str(datetime.now(timezone.utc).strftime('%m'))
         self.args['filename'] += str(datetime.now(timezone.utc).strftime('%d'))
         self.args['filename'] += ".csv"
+
+        print("Writing to {}".format(self.args['filename']))
         
     
     def build_heading(self):
@@ -443,16 +428,16 @@ class Radiometer:
     def write_coordinate_string(self):
         
         # Build the coordinate string_at
-        coordinate_string = 'Latitude : {}{}'.format(self.args['coordinates']['latitude']['degrees'], DEGREE_SIGN)
-        coordinate_string += '{}\''.format(self.args['coordinates']['latitude']['minutes'])
-        coordinate_string += '{:.3f}"'.format(self.args['coordinates']['latitude']['seconds'])
+        coordinate_string = 'Latitude : {}{}'.format(int(self.args['coordinates']['latitude']['degrees']), DEGREE_SIGN)
+        coordinate_string += '{}\''.format(int(self.args['coordinates']['latitude']['minutes']))
+        coordinate_string += '{:.3f}"'.format(float(self.args['coordinates']['latitude']['seconds']))
         coordinate_string += ' {}'.format(self.args['coordinates']['latitude']['direction'])
         
         coordinate_string += '      '
         
-        coordinate_string += 'Longitude : {}{}'.format(self.args['coordinates']['longitude']['degrees'], DEGREE_SIGN)
-        coordinate_string += '{}\''.format(self.args['coordinates']['longitude']['minutes'])
-        coordinate_string += '{:.3f}"'.format(self.args['coordinates']['longitude']['seconds'])
+        coordinate_string += 'Longitude : {}{}'.format(int(self.args['coordinates']['longitude']['degrees']), DEGREE_SIGN)
+        coordinate_string += '{}\''.format(int(self.args['coordinates']['longitude']['minutes']))
+        coordinate_string += '{:.3f}"'.format(float(self.args['coordinates']['longitude']['seconds']))
         coordinate_string += ' {}\n'.format(self.args['coordinates']['longitude']['direction'])
         
         print(coordinate_string, end = '')

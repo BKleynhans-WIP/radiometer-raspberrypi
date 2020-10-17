@@ -28,10 +28,15 @@ import serial
 
 class Sim7600():
     # Constructor
-    def __init__(self, args): #radio, provider, power_key = 6):
+    def __init__(self, args):
         
         # Set the debug variable to true to print additional debugging information
         self.debug = False
+        
+        self.args = args
+
+        # How many times should the GPS try to triangulate before using default values
+        self.gps_retries = 100
         
         # The defined dictionary contains a set of predefined strings
         # that are used for interface with the sim7600 module.  These strings
@@ -107,18 +112,16 @@ class Sim7600():
         if self.get_gsm_radio_status() == 'online':
             print("GSM Radio Status : Online        --> Resetting...")
             self.reset_gsm_radio()
-            
-        time.sleep(30)
 
         # If the sim7600 module is in offline mode, it needs to be reset before it can be
         # made online
         if self.get_gsm_radio_status() == 'offline':
             print("GSM Radio Status : Offline       --> Resetting...")
             self.reset_gsm_radio()
-
-        time.sleep(30)
             
         radio_status, stderr = self._shell_process(self.build_command('setRadioMode', 'online'))
+        
+        time.sleep(60)
         
         if self.return_status(radio_status):
             print("GSM Radio Status : Online")
@@ -192,7 +195,8 @@ class Sim7600():
         
         self._print_debug_info()
         
-        command_string = "sudo udhcpc -t 10 -n -i " + self.defined['wwanInterface']
+        # Retry connecting 10 times at 5 second intervals
+        command_string = "sudo udhcpc -t 10 -T 5 -n -i " + self.defined['wwanInterface']
         stdout, stderr = self._shell_process(command_string)
         
     
@@ -208,14 +212,29 @@ class Sim7600():
         stdout, stderr = self._shell_process(command_string)
         
 
+    # Update the UTC time on the device
+    def update_utc_time(self):
+        
+        self._print_debug_info()
+
+        # It can take a long time for the server to connect to an NTP server
+        # therefore we are adding a 1 minute sleep timer
+        time.sleep(60)
+        
+        command_string = "sudo timedatectl"
+        stdout, stderr = self._shell_process(command_string)
+        
+        return stdout
+    
+    
     # Manually reset the GSM radio
     def reset_gsm_radio(self):
         
         self._print_debug_info()
-
-        time.sleep(10)
             
         radio_status, stderr = self._shell_process(self.build_command('setRadioMode', 'reset'))
+        
+        time.sleep(60)
             
         if self.return_status(radio_status):
             print("GSM Radio Status : low-power")
@@ -227,6 +246,8 @@ class Sim7600():
         self._print_debug_info()
         
         radio_status, stderr = self._shell_process(self.build_command('setRadioMode', 'offline'))
+        
+        time.sleep(60)
         
         self.return_status(radio_status)
         
@@ -362,7 +383,7 @@ class Sim7600():
         
         self._print_debug_info()
         
-        print('Powering on SIM7600X')
+        print('Powering on SIM7600X\n')
         
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -385,7 +406,7 @@ class Sim7600():
         
         self._print_debug_info()
         
-        print('Powering down SIM7600X')
+        print('Powering down SIM7600X\n')
         
         GPIO.output(self.defined['powerKey'], GPIO.HIGH)
         time.sleep(3)
@@ -419,52 +440,58 @@ class Sim7600():
         print('Starting GPS session...')
         
         receive_null = True
-        answer = 0        
+        answer = 0
         receive_buffer = ''
         self._send_at_command('AT+CGPS=1,1', 'OK', 1)
         time.sleep(2)
         
-        # if the modem was not shut down properly, it might go into a loop that refuses to connect
-        # in that case, power off the modem and try again
-        power_cycle_counter = 0
-        reboot_counter = 0
+        # If the GPS does not triangulate position in 100 tries, use default values
+        default_counter = 0
         
         while receive_null:
-            power_cycle_counter += 1
-            time.sleep(2)
-            print("Attempt : {}".format(power_cycle_counter))
-            
-            answer, receive_buffer = self._send_at_command('AT+CGPSINFO', '+CGPSINFO: ', 1)
-            
-            if answer == 1:
-                answer = 0
-            else:
-                print('error %d' %answer)
-                receive_buffer = ''
-                self._send_at_command('AT+CGPS=0', 'OK', 1)
-                return False
+            if default_counter < self.gps_retries:
+                default_counter += 1
+                time.sleep(2)
+                print("Attempt : {}".format(default_counter))
                 
-            time.sleep(1.5)
-                        
-            if '+CGPSINFO' in receive_buffer and ',,,,,,,,' not in receive_buffer:
-                gpgga_array = receive_buffer[receive_buffer.index(':') + 1:].split(',')
+                answer, receive_buffer = self._send_at_command('AT+CGPSINFO', '+CGPSINFO: ', 1)
                 
-                self.coordinates = {
-                    'latitude': {
-                        'degrees': gpgga_array[0][:gpgga_array[0].find('.') - 2],
-                        'minutes': gpgga_array[0][3:gpgga_array[0].find('.')],
-                        'seconds': float(gpgga_array[0][gpgga_array[0].find('.'):]) * 60,
-                        'direction': gpgga_array[1]
-                    },
-                    'longitude': {
-                        'degrees': gpgga_array[2][:gpgga_array[2].find('.') - 2],
-                        'minutes': gpgga_array[2][3:gpgga_array[2].find('.')],
-                        'seconds': float(gpgga_array[2][gpgga_array[2].find('.'):]) * 60,
-                        'direction': gpgga_array[3]
+                if answer == 1:
+                    answer = 0
+                else:
+                    print('error %d' %answer)
+                    receive_buffer = ''
+                    self._send_at_command('AT+CGPS=0', 'OK', 1)
+                    return False
+                    
+                time.sleep(1.5)
+                            
+                if '+CGPSINFO' in receive_buffer and ',,,,,,,,' not in receive_buffer:
+                    gpgga_array = receive_buffer[receive_buffer.index(':') + 1:].split(',')
+                    
+                    self.coordinates = {
+                        'latitude': {
+                            'degrees': gpgga_array[0][:gpgga_array[0].find('.') - 2],
+                            'minutes': gpgga_array[0][3:gpgga_array[0].find('.')],
+                            'seconds': float(gpgga_array[0][gpgga_array[0].find('.'):]) * 60,
+                            'direction': gpgga_array[1]
+                        },
+                        'longitude': {
+                            'degrees': gpgga_array[2][:gpgga_array[2].find('.') - 2],
+                            'minutes': gpgga_array[2][3:gpgga_array[2].find('.')],
+                            'seconds': float(gpgga_array[2][gpgga_array[2].find('.'):]) * 60,
+                            'direction': gpgga_array[3]
+                        }
                     }
-                }
+                    
+                    receive_null = False
+                    
+            else:
+                self.coordinates = self.args['preferences']['coordinates']
+                
+                receive_null = False
         
-                return self.coordinates
+        return self.coordinates
         
         
     def _send_at_command(self, command, return_value, timeout):
